@@ -1,0 +1,79 @@
+#!/usr/bin/env ruby
+
+require 'prometheus/client/rack/exporter'
+require 'socket'
+require 'docker'
+require 'rack'
+require 'rack/handler/webrick'
+require 'logger'
+
+prometheus = Prometheus::Client.registry
+
+mailq = prometheus.gauge(:postfix_queue_size, "Number of messages in the mail queue")
+
+Thread.abort_on_exception = true
+
+Thread.new do
+	loop do
+		begin
+			%w{incoming active corrupt hold}.each do |q|
+				mailq.set({ queue: q }, Dir["/var/spool/postfix/#{q}/*"].size)
+			end
+
+			# deferred is special, because it's often hueg it gets sharded into
+			# multiple subdirectories
+			mailq.set({ queue: 'deferred' }, Dir["/var/spool/postfix/deferred/*/*"].size)
+
+			sleep 5
+		rescue StandardError => ex
+			$stderr.puts "Error while monitoring queue sizes: #{ex.message} (#{ex.class})"
+			$stderr.puts ex.backtrace.map { |l| "  #{l}" }.join("\n")
+			sleep 1
+		end
+	end
+end
+
+if ENV["SYSLOG_SOCKET"]
+	delays   = prometheus.summary(:postfix_delivery_delays, "Distribution of time taken to deliver (or bounce) messages")
+	statuses = prometheus.counter(:postfix_deliveries, "How many messages have been delivered (or bounced)")
+
+	Thread.new do
+		begin
+			s = Socket.new(Socket::AF_UNIX, Socket::SOCK_DGRAM, 0)
+			s.bind(Socket.pack_sockaddr_un(ENV["SYSLOG_SOCKET"]))
+		rescue Errno::EEXIST, Errno::EADDRINUSE
+			File.unlink ENV["SYSLOG_SOCKET"]
+			retry
+		end
+
+		loop do
+			begin
+				msg = s.recvmsg.first
+				if msg =~ %r{postfix/smtp.* delay=(\d+(\.\d+)?), .* dsn=(\d+\.\d+\.\d+), status=(\w+)}
+					delay  = $1.to_f
+					dsn    = $3
+					status = $4
+
+					if status == "bounced" or status == "sent"
+						statuses.increment(dsn: dsn, status: status)
+						delays.add({dsn: dsn, status: status}, delay)
+					end
+				end
+			rescue StandardError => ex
+				$stderr.puts "Error while receiving postfix logs: #{ex.message} (#{ex.class})"
+				$stderr.puts ex.backtrace.map { |l| "  #{l}" }.join("\n")
+				sleep 1
+			end
+		end
+	end
+end
+
+app = Rack::Builder.new
+app.use Prometheus::Client::Rack::Exporter
+app.run ->(env) { [404, {'Content-Type' => 'text/plain'}, ['NOPE NOPE NOPE NOPE']] }
+
+logger = Logger.new($stderr)
+logger.level = Logger::INFO
+logger.formatter = proc { |s, t, p, m| "WEBrick: #{m}\n" }
+
+Rack::Handler::WEBrick.run app, Host: '::', Port: 9154, Logger: logger, AccessLog: []
