@@ -2,7 +2,6 @@
 
 require 'prometheus/client/rack/exporter'
 require 'socket'
-require 'docker'
 require 'rack'
 require 'rack/handler/webrick'
 require 'logger'
