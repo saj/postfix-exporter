@@ -6,4 +6,4 @@ RUN apk update \
 	&& apk del build-base \
 	&& rm -f /var/cache/apk/*
 
-ENTRYPOINT ["/usr/local/bundle/bin/postgres-exporter"]
+ENTRYPOINT ["/usr/local/bundle/bin/postfix-exporter"]
