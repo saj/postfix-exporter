@@ -67,7 +67,7 @@ end
 
 app = Rack::Builder.new
 app.use Rack::Deflater, if: ->(_, _, _, body) { body.any? && body[0].length > 512 }
-app.use Prometheus::Client::Rack::Exporter
+app.use Prometheus::Middleware::Exporter
 app.run ->(env) { [404, {'Content-Type' => 'text/plain'}, ['NOPE NOPE NOPE NOPE']] }
 
 logger = Logger.new($stderr)
