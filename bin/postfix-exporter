@@ -1,8 +1,8 @@
 #!/usr/bin/env ruby
 
-require 'prometheus/client/rack/exporter'
-require 'socket'
 require 'rack'
+require 'prometheus/middleware/exporter'
+require 'socket'
 require 'rack/handler/webrick'
 require 'logger'
 
@@ -66,6 +66,7 @@ if ENV["SYSLOG_SOCKET"]
 end
 
 app = Rack::Builder.new
+app.use Rack::Deflater, if: ->(_, _, _, body) { body.any? && body[0].length > 512 }
 app.use Prometheus::Client::Rack::Exporter
 app.run ->(env) { [404, {'Content-Type' => 'text/plain'}, ['NOPE NOPE NOPE NOPE']] }
 
