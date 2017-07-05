@@ -20,6 +20,6 @@ end
 
 desc "Build and push a new docker image"
 task :docker do
-	sh "docker build -t discourse/postfix-exporter --build-arg=http_proxy=#{ENV['http_proxy']} ."
+	sh "docker build -t discourse/postfix-exporter --build-arg=GEM_VERSION=#{GVB.version} --build-arg=http_proxy=#{ENV['http_proxy']} ."
 	sh "docker push discourse/postfix-exporter"
 end
