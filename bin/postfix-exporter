@@ -47,7 +47,7 @@ if ENV["SYSLOG_SOCKET"]
 		loop do
 			begin
 				msg = s.recvmsg.first
-				if msg =~ %r{postfix/smtp.* delay=(\d+(\.\d+)?), .* dsn=(\d+\.\d+\.\d+), status=(\w+)}
+				if msg =~ %r{postfix/.* delay=(\d+(\.\d+)?), .* dsn=(\d+\.\d+\.\d+), status=(\w+)}
 					delay  = $1.to_f
 					dsn    = $3
 					status = $4
