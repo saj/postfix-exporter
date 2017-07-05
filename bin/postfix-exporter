@@ -74,4 +74,13 @@ logger = Logger.new($stderr)
 logger.level = Logger::INFO
 logger.formatter = proc { |s, t, p, m| "WEBrick: #{m}\n" }
 
-Rack::Handler::WEBrick.run app, Host: (RUBY_VERSION >= '2.1' ? '*' : '::'), Port: 9154, Logger: logger, AccessLog: []
+# This is the only way to get the Rack-mediated webrick to listen on both
+# INADDR_ANY and IN6ADDR_ANY on libcs that don't support getaddrinfo("*")
+# (ie musl-libc).  Setting `Host: '*'` barfs on the above-mentioned buggy(?)
+# libcs, `Host: '::'` fails on newer rubies (because they use
+# setsockopt(V6ONLY) by default), and with RACK_ENV at its default of
+# "development", it only listens on localhost.  And even *this* only works
+# on Rack 2, because before that the non-development default listen address
+# was "0.0.0.0"!
+ENV['RACK_ENV'] = "none"
+Rack::Handler::WEBrick.run app, Port: 9154, Logger: logger, AccessLog: []
