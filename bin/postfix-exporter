@@ -55,7 +55,7 @@ if ENV["SYSLOG_SOCKET"]
 
 					if status == "bounced" or status == "sent"
 						statuses.increment(dsn: dsn, status: status)
-						delays.add({dsn: dsn, status: status}, delay)
+						delays.observe({dsn: dsn, status: status}, delay)
 					end
 				end
 			rescue StandardError => ex
