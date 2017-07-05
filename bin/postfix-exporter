@@ -34,7 +34,6 @@ end
 
 if ENV["SYSLOG_SOCKET"]
 	delays   = prometheus.summary(:postfix_delivery_delays, "Distribution of time taken to deliver (or bounce) messages")
-	statuses = prometheus.counter(:postfix_deliveries, "How many messages have been delivered (or bounced)")
 
 	Thread.new do
 		begin
@@ -54,7 +53,6 @@ if ENV["SYSLOG_SOCKET"]
 					status = $4
 
 					if status == "bounced" or status == "sent"
-						statuses.increment(dsn: dsn, status: status)
 						delays.observe({dsn: dsn, status: status}, delay)
 					end
 				end
