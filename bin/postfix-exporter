@@ -8,7 +8,11 @@ require 'logger'
 
 prometheus = Prometheus::Client.registry
 
+prometheus.gauge(:postfix_exporter_start_time_seconds, "When this process started up").set({}, Time.now.to_f)
+
 mailq = prometheus.gauge(:postfix_queue_size, "Number of messages in the mail queue")
+q_err = prometheus.counter(:postfix_queue_processing_error_total, "Exceptions raised whilst scanning the Postfix queue")
+up    = prometheus.gauge(:postfix_up, "Whether the master process is running or not")
 
 Thread.abort_on_exception = true
 
@@ -22,18 +26,49 @@ Thread.new do
 			# deferred is special, because it's often hueg it gets sharded into
 			# multiple subdirectories
 			mailq.set({ queue: 'deferred' }, Dir["/var/spool/postfix/deferred/*/*"].size)
-
-			sleep 5
 		rescue StandardError => ex
 			$stderr.puts "Error while monitoring queue sizes: #{ex.message} (#{ex.class})"
 			$stderr.puts ex.backtrace.map { |l| "  #{l}" }.join("\n")
-			sleep 1
+			q_err.increment(class: ex.class.to_s, phase: "scan")
 		end
+
+		begin
+			master_pid = File.read("/var/spool/postfix/pid/master.pid").to_i
+
+			if master_pid > 1
+				Process.kill(0, master_pid)
+				# If we get here, then the process exists, and
+				# that'll do for our purposes
+				up.set({}, 1)
+			else
+				up.set({}, 0)
+			end
+		rescue Errno::ENOENT, Errno::ESRCH, Errno::EACCES
+			up.set({}, 0)
+		rescue Errno::EPERM
+			# Ironically, we don't need to be able to *actually*
+			# signal the process; EPERM means it exists and is running
+			# as someone more privileged than us, which is enough
+			# for our purposes
+			up.set({}, 1)
+		rescue StandardError => ex
+			$stderr.puts "Error while checking master process: #{ex.message} (#{ex.class})"
+			$stderr.puts ex.backtrace.map { |l| "  #{l}" }.join("\n")
+			q_err.increment(class: ex.class.to_s, phase: "up")
+		end
+
+		sleep 5
+
 	end
 end
 
 if ENV["SYSLOG_SOCKET"]
-	delays   = prometheus.summary(:postfix_delivery_delays, "Distribution of time taken to deliver (or bounce) messages")
+	delays     = prometheus.summary(:postfix_delivery_delays, "Distribution of time taken to deliver (or bounce) messages")
+	connects   = prometheus.counter(:postfix_smtpd_connections_total, "Connections to smtpd")
+	active     = prometheus.gauge(:postfix_smtpd_active_connections, "Current connections to smtpd")
+	incoming   = prometheus.counter(:postfix_incoming_delivery_attempts_total, "Delivery attempts, labelled by dsn and status")
+	messages   = prometheus.counter(:postfix_log_messages_total, "Syslog messages received, labelled by how it was handled")
+	log_errors = prometheus.counter(:postfix_log_processing_error_total, "Exceptions raised whilst processing log messages")
 
 	Thread.new do
 		begin
@@ -55,10 +90,36 @@ if ENV["SYSLOG_SOCKET"]
 					if status == "bounced" or status == "sent"
 						delays.observe({dsn: dsn, status: status}, delay)
 					end
+
+					messages.increment(type: "delay")
+				elsif msg =~ %r{postfix/smtpd\[\d+\]: connect from }
+					connects.increment({})
+					active.send(:synchronize) { active.set({}, active.get({}) || 0 + 1) }
+					messages.increment(type: "connect")
+				elsif msg =~ %r{postfix/smtpd\[\d+\]: disconnect from }
+					active.send(:synchronize) do
+					  new = (active.get({}) || 0) - 1
+					  # If we start running mid-stream,
+					  # we might end up seeing more
+					  # disconnects than connections,
+					  # which would be confusing
+					  new = 0 if new < 0
+					  active.set({}, new)
+					end
+					messages.increment(type: "disconnect")
+				elsif msg =~ %r{postfix/smtpd\[\d+\]: [A-F0-9]+: client=}
+					incoming.increment(dsn: "2.0.0", status: "queued")
+					messages.increment(type: "queued")
+				elsif msg =~ %r{postfix/smtpd\[\d+\]: NOQUEUE: reject: RCPT from \S+: \d{3} (\d+\.\d+\.\d+) }
+					incoming.increment(dsn: $1, status: "rejected")
+					messages.increment(type: "noqueue")
+				else
+					messages.increment(type: "ignored")
 				end
 			rescue StandardError => ex
 				$stderr.puts "Error while receiving postfix logs: #{ex.message} (#{ex.class})"
 				$stderr.puts ex.backtrace.map { |l| "  #{l}" }.join("\n")
+				log_errors.increment(class: ex.class.to_s)
 				sleep 1
 			end
 		end
